@@ -1,0 +1,31 @@
+# Visual Studio 캐시/설정
+.vs/
+ipch/
+*.sdf
+*.ncb
+*.suo
+*.user
+*.aps
+*.VC.db
+*.opensdf
+
+# 빌드 산출물
+[Dd]ebug/
+[Rr]elease/
+Unicode Debug/
+Unicode Release/
+xbuild/
+*.obj
+*.pch
+*.pdb
+*.idb
+*.ilk
+*.tlog
+*.lastbuildstate
+*.recipe
+*.log
+*.iobj
+*.ipdb
+
+# 압축 파일 (GitHub 100MB 제한 초과)
+*.zip

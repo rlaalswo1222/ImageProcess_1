@@ -133,6 +133,7 @@
     <ClCompile Include="ImageProcessingDoc.cpp" />
     <ClCompile Include="ImageProcessingView.cpp" />
     <ClCompile Include="MainFrm.cpp" />
+    <ClCompile Include="CompositeProcessor.cpp" />
     <ClCompile Include="ObjectDetector.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
@@ -152,6 +153,8 @@
     <ClInclude Include="ImageProcessingDoc.h" />
     <ClInclude Include="ImageProcessingView.h" />
     <ClInclude Include="MainFrm.h" />
+    <ClInclude Include="CompositeProcessor.h" />
+    <ClInclude Include="ImageMask.h" />
     <ClInclude Include="ObjectDetector.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="stdafx.h" />

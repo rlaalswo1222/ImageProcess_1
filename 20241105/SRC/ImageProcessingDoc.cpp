@@ -1,3 +1,4 @@
+
 // ImageProcessingDoc.cpp : Implement a CImageProcessingDoc Class
 //
 
@@ -7,6 +8,9 @@
 #include "DlgBrightnessOption.h"
 #include "DlgMosaicOption.h"
 #include "DlgCompositeOption.h"
+#include "ImageMask.h"
+#include "ObjectDetector.h"
+#include "CompositeProcessor.h"
 #include "DlgIntensityTransformOption.h"
 #include "DlgContrastStretchOption.h"
 
@@ -162,6 +166,14 @@ void CImageProcessingDoc::CalculateHistogram()
 	}
 }
 
+// clamp value to 0~255 (prevent overflow/underflow)
+static BYTE ClampByte(int v)
+{
+	if (v > 255) return 255;
+	if (v < 0)   return 0;
+	return (BYTE)v;
+}
+
 void CImageProcessingDoc::OnProcessBrightness()
 {
 	// TODO: Add a changing the brightness histogram code here
@@ -169,49 +181,25 @@ void CImageProcessingDoc::OnProcessBrightness()
 		DlgBrightnessOption dlg;
 
 		if (dlg.DoModal() == IDOK) {
-			// write your own code
-			// for applying your effect, you must use m_pImage
-			// this code is a simple example for manufacturing image : grayscaling
-
-			int nPlusMinus = dlg.m_nPlusMinus;
+			int nPlusMinus = dlg.m_nPlusMinus;		// 0 : plus(+), 1 : minus(-)
 			BYTE byModifyValue = dlg.m_byModifyValue;
 
-
-			int modify = (nPlusMinus == 0) ? (int)byModifyValue : -(int)byModifyValue;
+			int nModify = (nPlusMinus == 0) ? (int)byModifyValue : -(int)byModifyValue;
 
 			DWORD width = m_pImage->GetWidth();
 			DWORD height = m_pImage->GetHeight();
 			RGBQUAD color;
-			RGBQUAD newcolor;
 
 			for (DWORD y = 0; y < height; y++) {
 				for (DWORD x = 0; x < width; x++) {
 					color = m_pImage->GetPixelColor(x, y);
 
-					// do arithmetic in int to avoid overflow/underflow, then clamp
-					int r = (int)color.rgbRed + modify;
-					int g = (int)color.rgbGreen + modify;
-					int b = (int)color.rgbBlue + modify;
+					// compute in int, then clamp to 0~255
+					color.rgbRed   = ClampByte((int)color.rgbRed   + nModify);
+					color.rgbGreen = ClampByte((int)color.rgbGreen + nModify);
+					color.rgbBlue  = ClampByte((int)color.rgbBlue  + nModify);
 
-					// clamp r
-					if (r < 0) r = 0;
-					else if (r > 255) r = 255;
-					newcolor.rgbRed = (BYTE)r;
-
-					// clamp g
-					if (g < 0) g = 0;
-					else if (g > 255) g = 255;
-					newcolor.rgbGreen = (BYTE)g;
-
-					// clamp b
-					if (b < 0) b = 0;
-					else if (b > 255) b = 255;
-					newcolor.rgbBlue = (BYTE)b;
-
-					// preserve reserved/alpha if present
-					newcolor.rgbReserved = color.rgbReserved;
-
-					m_pImage->SetPixelColor(x, y, newcolor);
+					m_pImage->SetPixelColor(x, y, color);
 				}
 			}
 		}
@@ -223,66 +211,63 @@ void CImageProcessingDoc::OnProcessBrightness()
 
 void CImageProcessingDoc::OnProcessMosaic()
 {
+	// TODO: Add a mosaic code here
 	if (m_pImage) {
 		DlgMosaicOption dlg;
 
 		if (dlg.DoModal() == IDOK) {
-			if (dlg.m_dwWindowSize > 1) {
-				AfxMessageBox(_T("0은 블러링, 1은 샤프닝을 입력하세요."));
-				return;
-			}
+			DWORD dwWindowSize = dlg.m_dwWindowSize;
+			if (dwWindowSize < 1) dwWindowSize = 1;		// prevent divide by zero
 
-			const float blurMask[3][3] = {
-				{ 1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f },
-				{ 1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f },
-				{ 1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f }
-			};
-			const float sharpenMask[3][3] = {
-				{ 0.0f, -1.0f, 0.0f },
-				{ -1.0f, 5.0f, -1.0f },
-				{ 0.0f, -1.0f, 0.0f }
-			};
-			const float (*mask)[3] = (dlg.m_dwWindowSize == 0) ? blurMask : sharpenMask;
-
+			// 1. Get image size
 			DWORD width = m_pImage->GetWidth();
 			DWORD height = m_pImage->GetHeight();
-			CxImage source(*m_pImage);
 
-			for (DWORD y = 0; y < height; y++) {
-				for (DWORD x = 0; x < width; x++) {
-					float sumR = 0.0f;
-					float sumG = 0.0f;
-					float sumB = 0.0f;
+			// 2. Find steps for window shifting (round up to include the edge of the image)
+			DWORD xStep = (width  + dwWindowSize - 1) / dwWindowSize;
+			DWORD yStep = (height + dwWindowSize - 1) / dwWindowSize;
 
-					for (int j = -1; j <= 1; j++) {
-						for (int i = -1; i <= 1; i++) {
-							long sampleX = (long)x + i;
-							long sampleY = (long)y + j;
-							if (sampleX < 0) sampleX = 0;
-							else if (sampleX >= (long)width) sampleX = (long)width - 1;
-							if (sampleY < 0) sampleY = 0;
-							else if (sampleY >= (long)height) sampleY = (long)height - 1;
+			RGBQUAD color;
+			RGBQUAD newcolor;
 
-							RGBQUAD color = source.GetPixelColor(sampleX, sampleY);
-							float coefficient = mask[j + 1][i + 1];
-							sumR += color.rgbRed * coefficient;
-							sumG += color.rgbGreen * coefficient;
-							sumB += color.rgbBlue * coefficient;
+			// 5, 6. Shift the window by window size (not by 1 pixel : Mosaic != Blur)
+			for (DWORD sy = 0; sy < yStep; sy++) {
+				for (DWORD sx = 0; sx < xStep; sx++) {
+					DWORD x0 = sx * dwWindowSize;
+					DWORD y0 = sy * dwWindowSize;
+
+					// Edge of the image : the last window can be smaller than window size
+					DWORD x1 = min(x0 + dwWindowSize, width);
+					DWORD y1 = min(y0 + dwWindowSize, height);
+
+					// 3. Calculate average of R, G, B individually in the window
+					DWORD sumR = 0, sumG = 0, sumB = 0;
+					DWORD count = 0;
+
+					for (DWORD y = y0; y < y1; y++) {
+						for (DWORD x = x0; x < x1; x++) {
+							color = m_pImage->GetPixelColor(x, y);
+							sumR += color.rgbRed;
+							sumG += color.rgbGreen;
+							sumB += color.rgbBlue;
+							count++;
 						}
 					}
 
-					if (sumR < 0.0f) sumR = 0.0f;
-					else if (sumR > 255.0f) sumR = 255.0f;
-					if (sumG < 0.0f) sumG = 0.0f;
-					else if (sumG > 255.0f) sumG = 255.0f;
-					if (sumB < 0.0f) sumB = 0.0f;
-					else if (sumB > 255.0f) sumB = 255.0f;
+					if (count == 0) continue;
 
-					RGBQUAD newcolor = source.GetPixelColor(x, y);
-					newcolor.rgbRed = (BYTE)(sumR + 0.5f);
-					newcolor.rgbGreen = (BYTE)(sumG + 0.5f);
-					newcolor.rgbBlue = (BYTE)(sumB + 0.5f);
-					m_pImage->SetPixelColor(x, y, newcolor);
+					// Loss of data : round off instead of truncating the decimal point
+					newcolor.rgbRed      = (BYTE)((sumR + count / 2) / count);
+					newcolor.rgbGreen    = (BYTE)((sumG + count / 2) / count);
+					newcolor.rgbBlue     = (BYTE)((sumB + count / 2) / count);
+					newcolor.rgbReserved = 0;
+
+					// 4. Put the average value to whole pixels in the window
+					for (DWORD y = y0; y < y1; y++) {
+						for (DWORD x = x0; x < x1; x++) {
+							m_pImage->SetPixelColor(x, y, newcolor);
+						}
+					}
 				}
 			}
 		}
@@ -292,60 +277,195 @@ void CImageProcessingDoc::OnProcessMosaic()
 	UpdateAllViews(NULL);
 }
 
-void CImageProcessingDoc::OnProcessComposite()
+// ---------------------------------------------------------------------------
+// Composite (Team Project 01):  squid_head + squid_body  ->  - squid_points
+// Helpers below only use CxImage's GetPixelColor / SetPixelColor / Create /
+// Load / Save (allowed by the assignment). All image analysis and composition
+// is done in ObjectDetector / CompositeProcessor.
+// ---------------------------------------------------------------------------
+
+static CString CompositeFolderOf(const CString& path)
 {
-	// TODO: Add a composite code here
-	if (m_pImage) {
-		DlgCompositeOption dlg;
+	int i = max(path.ReverseFind(_T('\\')), path.ReverseFind(_T('/')));
+	return (i >= 0) ? path.Left(i + 1) : CString(_T(""));
+}
 
-		if (dlg.DoModal() == IDOK) {
-			int nOperatorID = dlg.GetCompositeOperatorID();
-			CxImage * pSecondImage = dlg.GetSecondImage();
+static void CompositeAddFolder(CStringArray& list, CString dir)
+{
+	if (dir.IsEmpty())
+		return;
+	if (dir.Right(1) != _T("\\") && dir.Right(1) != _T("/"))
+		dir += _T("\\");
+	for (int i = 0; i < list.GetSize(); i++)
+		if (list[i].CompareNoCase(dir) == 0)
+			return;
+	list.Add(dir);
+}
 
-			DWORD width = m_pImage->GetWidth();
-			DWORD height = m_pImage->GetHeight();
-			RGBQUAD firstColor;
-			RGBQUAD secondColor;
-			RGBQUAD newColor;
+static bool CompositeLoadFile(const CString& path, CxImage& img)
+{
+	int dot = path.ReverseFind(_T('.'));
+	if (dot < 0)
+		return false;
+	DWORD type = CxImage::GetTypeIdFromName(path.Mid(dot + 1));
+	if (type == CXIMAGE_FORMAT_UNKNOWN)
+		return false;
+	return img.Load(path, type) && img.IsValid();
+}
 
-			for (DWORD y = 0; y < height; y++) {
-				for (DWORD x = 0; x < width; x++) {
-					firstColor = m_pImage->GetPixelColor(x, y);
-					// If second image is available and within bounds, combine; otherwise keep first image
-					if (pSecondImage != NULL && x < pSecondImage->GetWidth() && y < pSecondImage->GetHeight()) {
-						secondColor = pSecondImage->GetPixelColor(x, y);
-
-						int r, g, b;
-						if (nOperatorID == 0) { // Addition
-							r = (int)firstColor.rgbRed   + (int)secondColor.rgbRed;
-							g = (int)firstColor.rgbGreen + (int)secondColor.rgbGreen;
-							b = (int)firstColor.rgbBlue  + (int)secondColor.rgbBlue;
-						} else { // Subtraction (any non-zero treated as subtraction)
-							r = (int)firstColor.rgbRed   - (int)secondColor.rgbRed;
-							g = (int)firstColor.rgbGreen - (int)secondColor.rgbGreen;
-							b = (int)firstColor.rgbBlue  - (int)secondColor.rgbBlue;
-						}
-
-						// Clamp to [0,255] to handle overflow/underflow
-						if (r < 0) r = 0; else if (r > 255) r = 255;
-						if (g < 0) g = 0; else if (g > 255) g = 255;
-						if (b < 0) b = 0; else if (b > 255) b = 255;
-
-						newColor.rgbRed   = (BYTE)r;
-						newColor.rgbGreen = (BYTE)g;
-						newColor.rgbBlue  = (BYTE)b;
-						// preserve reserved/alpha from first image
-						newColor.rgbReserved = firstColor.rgbReserved;
-
-					} else {
-						// No second image or out-of-bounds: keep original pixel
-						newColor = firstColor;
-					}
-
-					m_pImage->SetPixelColor(x, y, newColor);
-				}
+// look for <folder>\<baseName>.(png|jpg|jpeg|bmp) in every candidate folder
+static bool CompositeFindAndLoad(const CStringArray& folders, const TCHAR* baseName, CxImage& img, CString& foundPath)
+{
+	static const TCHAR* exts[] = { _T("png"), _T("jpg"), _T("jpeg"), _T("bmp") };
+	for (int f = 0; f < folders.GetSize(); f++) {
+		for (int e = 0; e < 4; e++) {
+			CString path = folders[f] + baseName + _T(".") + exts[e];
+			if (GetFileAttributes(path) == INVALID_FILE_ATTRIBUTES)
+				continue;
+			if (CompositeLoadFile(path, img)) {
+				foundPath = path;
+				return true;
 			}
 		}
+	}
+	return false;
+}
+
+// fall back: let the user pick the file
+static bool CompositeAskAndLoad(const TCHAR* baseName, CxImage& img, CString& foundPath)
+{
+	CString title;
+	title.Format(_T("Select %s image"), baseName);
+	CFileDialog dlg(TRUE, NULL, NULL, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY,
+		_T("Image Files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All Files (*.*)|*.*||"),
+		AfxGetMainWnd());
+	dlg.m_ofn.lpstrTitle = title;
+	if (dlg.DoModal() != IDOK)
+		return false;
+	foundPath = dlg.GetPathName();
+	return CompositeLoadFile(foundPath, img);
+}
+
+static bool CompositeCxToRaw(CxImage* pImg, RawImage& out)
+{
+	if (!pImg || !pImg->IsValid())
+		return false;
+	const int w = (int)pImg->GetWidth();
+	const int h = (int)pImg->GetHeight();
+	out.Create(w, h);
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++) {
+			RGBQUAD c = pImg->GetPixelColor(x, y);
+			out.Set(x, y, c.rgbRed, c.rgbGreen, c.rgbBlue);
+		}
+	}
+	return true;
+}
+
+static void CompositeRawToCx(const RawImage& src, CxImage* dst)
+{
+	dst->Create(src.width, src.height, 24);
+	RGBQUAD c;
+	c.rgbReserved = 0;
+	for (int y = 0; y < src.height; y++) {
+		for (int x = 0; x < src.width; x++) {
+			unsigned char r, g, b;
+			src.Get(x, y, r, g, b);
+			c.rgbRed = r;
+			c.rgbGreen = g;
+			c.rgbBlue = b;
+			dst->SetPixelColor(x, y, c);
+		}
+	}
+}
+
+static void CompositeConvertMask(const ObjectMask& src, ImageMask& dst)
+{
+	dst.Create((int)src.width, (int)src.height);
+	for (size_t i = 0; i < src.pixels.size(); i++)
+		dst.data[i] = src.pixels[i] ? 1 : 0;
+	dst.bgR = src.backgroundColor.rgbRed;
+	dst.bgG = src.backgroundColor.rgbGreen;
+	dst.bgB = src.backgroundColor.rgbBlue;
+	dst.left = src.bounds.left;
+	dst.top = src.bounds.top;
+	dst.right = src.bounds.right - 1;      // ObjectMask bounds are exclusive (RECT style)
+	dst.bottom = src.bounds.bottom - 1;
+}
+
+void CImageProcessingDoc::OnProcessComposite()
+{
+	if (!m_pImage)
+		return;
+
+	// ---- 1. load squid_head / squid_body / squid_points ----
+	// search order: folder of the opened image, folder of the .exe, current dir.
+	CStringArray folders;
+	CompositeAddFolder(folders, CompositeFolderOf(GetPathName()));
+	TCHAR exePath[MAX_PATH] = { 0 };
+	GetModuleFileName(NULL, exePath, MAX_PATH);
+	CompositeAddFolder(folders, CompositeFolderOf(exePath));
+	TCHAR cwd[MAX_PATH] = { 0 };
+	GetCurrentDirectory(MAX_PATH, cwd);
+	CompositeAddFolder(folders, cwd);
+
+	const TCHAR* names[3] = { _T("squid_head"), _T("squid_body"), _T("squid_points") };
+	CxImage head, body, points;
+	CxImage* imgs[3] = { &head, &body, &points };
+	CString outFolder;
+
+	for (int i = 0; i < 3; i++) {
+		CString found;
+		if (!CompositeFindAndLoad(folders, names[i], *imgs[i], found) &&
+		    !CompositeAskAndLoad(names[i], *imgs[i], found)) {
+			CString msg;
+			msg.Format(_T("Could not load %s. Composite was cancelled."), names[i]);
+			AfxMessageBox(msg);
+			return;
+		}
+		if (i == 0)
+			outFolder = CompositeFolderOf(found);
+	}
+
+	// ---- 2. CxImage -> RawImage ----
+	RawImage rawHead, rawBody, rawPoints;
+	if (!CompositeCxToRaw(&head, rawHead) ||
+	    !CompositeCxToRaw(&body, rawBody) ||
+	    !CompositeCxToRaw(&points, rawPoints)) {
+		AfxMessageBox(_T("Invalid input image."));
+		return;
+	}
+
+	// ---- 3. shape masks (ObjectDetector by member A: AnalyzeImage) ----
+	ObjectMask objHead, objBody, objPoints;
+	if (!AnalyzeImage(&head, 15, objHead) ||
+	    !AnalyzeImage(&body, 15, objBody) ||
+	    !AnalyzeImage(&points, 15, objPoints)) {
+		AfxMessageBox(_T("Could not find a shape in one of the input images."));
+		return;
+	}
+	ImageMask maskHead, maskBody, maskPoints;
+	CompositeConvertMask(objHead, maskHead);
+	CompositeConvertMask(objBody, maskBody);
+	CompositeConvertMask(objPoints, maskPoints);
+
+	// ---- 4. head + body, then - points ----
+	CompositeOptions opt;            // defaults: additive overlap color, RGB subtract
+	RawImage intermediate, result;
+	if (!CompositeProcessor::Compose(rawHead, maskHead, rawBody, maskBody,
+	                                 rawPoints, maskPoints, opt, intermediate, result)) {
+		AfxMessageBox(_T("Composite failed."));
+		return;
+	}
+
+	// ---- 5. show result in the current document and save both steps ----
+	CompositeRawToCx(result, m_pImage);
+
+	CxImage stepImage;
+	CompositeRawToCx(intermediate, &stepImage);
+	if (!outFolder.IsEmpty()) {
+		stepImage.Save(outFolder + _T("squid_step1_head_body.png"), CXIMAGE_FORMAT_PNG);
+		m_pImage->Save(outFolder + _T("squid_result.png"), CXIMAGE_FORMAT_PNG);
 	}
 
 	CalculateHistogram();
@@ -521,7 +641,8 @@ void CImageProcessingDoc::OnHistogramSpecification()
 
 
 		// Same as histogram equalization code from here.
-		// However, After a cumulative histogram convert to float sum_hist
+		// However, After a cumulative histogram convert to float sum_hist[256] and
+		// modifing to be entered in the real number on calculating sum_hist
 
 
 		//(4) 
